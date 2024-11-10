@@ -13,7 +13,7 @@ import { pipeline } from 'stream';
 const pipelineAsync = promisify(pipeline);
 
 const VOICE_CHANNEL_ID = '1305261184970395709';
-const RADIO_URL = 'https://s2.radio.co/s3e57f0675/listen';
+const RADIO_URL = 'http://s2.radio.co/s3e57f0675/listen.m3u';
 
 const client = new Client({
     intents: [
