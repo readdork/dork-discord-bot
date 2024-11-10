@@ -45,9 +45,10 @@ async function startStreaming(voiceChannel) {
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+            selfDeaf: false,
         });
 
-        // Create resource for the radio stream
+        // Create resource
         const resource = createAudioResource(RADIO_URL, {
             inputType: 'arbitrary',
             inlineVolume: true,
@@ -56,27 +57,50 @@ async function startStreaming(voiceChannel) {
             }
         });
 
+        // Set volume
+        resource.volume?.setVolume(1);
+
         // Subscribe player to connection and play
         connection.subscribe(player);
-        player.play(resource);
+        
+        // Add a short delay before playing
+        setTimeout(() => {
+            console.log('Playing resource...');
+            player.play(resource);
+        }, 1000);
 
         // Handle connection state changes
         connection.on(VoiceConnectionStatus.Disconnected, () => {
+            console.log('Connection disconnected');
             try {
                 connection.destroy();
-                startStreaming(voiceChannel);
+                setTimeout(() => startStreaming(voiceChannel), 5000);
             } catch (error) {
                 console.error('Failed to handle disconnection:', error);
             }
         });
 
-        // Log when the stream starts playing
+        // Log more connection states
+        connection.on(VoiceConnectionStatus.Connecting, () => {
+            console.log('Connection connecting...');
+        });
+
+        connection.on(VoiceConnectionStatus.Ready, () => {
+            console.log('Connection ready!');
+        });
+
+        // More detailed player state logging
         player.on('stateChange', (oldState, newState) => {
             console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
+            if (newState.status === 'idle') {
+                console.log('Player went idle, restarting stream...');
+                player.play(resource);
+            }
         });
 
     } catch (error) {
         console.error('Error in startStreaming:', error);
+        console.error(error.stack);
         setTimeout(() => startStreaming(voiceChannel), 5000);
     }
 }
