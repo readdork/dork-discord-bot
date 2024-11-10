@@ -5,11 +5,14 @@ import {
     createAudioResource, 
     NoSubscriberBehavior, 
     VoiceConnectionStatus,
-    entersState
+    StreamType
 } from '@discordjs/voice';
 import OpenAI from 'openai';
+import { createReadStream } from 'node:fs';
+import ffmpeg from 'ffmpeg-static';
+import { spawn } from 'node:child_process';
 
-const VOICE_CHANNEL_ID = '1305261184970395709'; // Add your voice channel ID here
+const VOICE_CHANNEL_ID = '1305261184970395709'; // Your voice channel ID
 const RADIO_URL = 'https://s2.radio.co/s3e57f0675/listen';
 
 const client = new Client({
@@ -27,91 +30,124 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Set up audio player
+// Set up audio player with better settings
 const player = createAudioPlayer({
     behaviors: {
-        noSubscriber: NoSubscriberBehavior.Play
+        noSubscriber: NoSubscriberBehavior.Play,
+        maxMissedFrames: 5000
     }
 });
 
 let connection = null;
+let currentProcess = null;
+
+function createFFmpegStream(url) {
+    if (currentProcess) {
+        currentProcess.kill();
+    }
+
+    const ffmpegArgs = [
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-i', url,
+        '-acodec', 'libopus',
+        '-f', 'opus',
+        '-ar', '48000',
+        '-ac', '2',
+        '-b:a', '96k',
+        '-loglevel', 'warning',
+        'pipe:1'
+    ];
+
+    currentProcess = spawn(ffmpeg, ffmpegArgs);
+    currentProcess.stderr.on('data', (data) => {
+        console.log(`FFmpeg: ${data}`);
+    });
+
+    return currentProcess.stdout;
+}
 
 async function startStreaming(voiceChannel) {
     try {
         console.log('Starting stream connection...');
         
-        // Create voice connection
+        // Destroy existing connection if any
+        if (connection) {
+            connection.destroy();
+        }
+
+        // Create new connection
         connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            selfDeaf: false,
+            selfDeaf: false
         });
 
-        // Create resource
-        const resource = createAudioResource(RADIO_URL, {
-            inputType: 'arbitrary',
-            inlineVolume: true,
-            metadata: {
-                title: 'Dork Radio'
-            }
+        // Create stream and resource
+        const stream = createFFmpegStream(RADIO_URL);
+        const resource = createAudioResource(stream, {
+            inputType: StreamType.Opus,
+            inlineVolume: true
         });
 
-        // Set volume
+        // Set initial volume
         resource.volume?.setVolume(1);
 
-        // Subscribe player to connection and play
+        // Subscribe and play
         connection.subscribe(player);
-        
-        // Add a short delay before playing
-        setTimeout(() => {
-            console.log('Playing resource...');
-            player.play(resource);
-        }, 1000);
+        player.play(resource);
+
+        console.log('Stream started successfully');
 
         // Handle connection state changes
-        connection.on(VoiceConnectionStatus.Disconnected, () => {
-            console.log('Connection disconnected');
+        connection.on(VoiceConnectionStatus.Disconnected, async () => {
+            console.log('Connection disconnected, attempting to reconnect...');
             try {
-                connection.destroy();
+                if (connection) {
+                    connection.destroy();
+                }
                 setTimeout(() => startStreaming(voiceChannel), 5000);
             } catch (error) {
                 console.error('Failed to handle disconnection:', error);
             }
         });
 
-        // Log more connection states
         connection.on(VoiceConnectionStatus.Connecting, () => {
-            console.log('Connection connecting...');
+            console.log('Connection status: Connecting');
         });
 
         connection.on(VoiceConnectionStatus.Ready, () => {
-            console.log('Connection ready!');
-        });
-
-        // More detailed player state logging
-        player.on('stateChange', (oldState, newState) => {
-            console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
-            if (newState.status === 'idle') {
-                console.log('Player went idle, restarting stream...');
-                player.play(resource);
-            }
+            console.log('Connection status: Ready');
         });
 
     } catch (error) {
         console.error('Error in startStreaming:', error);
-        console.error(error.stack);
         setTimeout(() => startStreaming(voiceChannel), 5000);
     }
 }
 
-// Debugging listeners
-player.on('error', error => {
-    console.error('Player error:', error);
-});
-
+// More detailed player monitoring
 player.on('stateChange', (oldState, newState) => {
     console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
+    
+    if (newState.status === 'idle') {
+        console.log('Player went idle, attempting to restart stream...');
+        const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
+        if (channel) {
+            startStreaming(channel);
+        }
+    }
+});
+
+player.on('error', error => {
+    console.error('Player error:', error);
+    const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
+    if (channel) {
+        console.log('Attempting to restart stream due to error...');
+        startStreaming(channel);
+    }
 });
 
 // Barry's personality prompt
@@ -188,14 +224,16 @@ client.on('messageCreate', async message => {
                 
                 case 'status':
                     const status = connection?.state?.status || 'Not connected';
-                    message.reply(`Radio status: ${status}`);
+                    const playerStatus = player.state.status;
+                    message.reply(`Radio status: Connection=${status}, Player=${playerStatus}`);
                     break;
 
                 case 'debug':
                     if (message.member.permissions.has('MANAGE_CHANNELS')) {
                         const playerState = player.state.status;
                         const connectionState = connection?.state?.status;
-                        message.reply(`Debug Info:\nPlayer State: ${playerState}\nConnection State: ${connectionState}\nChannel ID: ${VOICE_CHANNEL_ID}`);
+                        const processState = currentProcess ? 'Running' : 'Not running';
+                        message.reply(`Debug Info:\nPlayer State: ${playerState}\nConnection State: ${connectionState}\nFFmpeg Process: ${processState}\nChannel ID: ${VOICE_CHANNEL_ID}`);
                     }
                     break;
 
