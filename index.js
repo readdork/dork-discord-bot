@@ -10,7 +10,7 @@ import {
 import OpenAI from 'openai';
 import play from 'play-dl';
 
-const VOICE_CHANNEL_ID = ''; // Add your voice channel ID here
+const VOICE_CHANNEL_ID = '1305261184970395709'; // Add your voice channel ID here
 const RADIO_URL = 'https://s2.radio.co/s3e57f0675/listen';
 
 const client = new Client({
