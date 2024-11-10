@@ -90,14 +90,6 @@ player.on('stateChange', (oldState, newState) => {
     console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
 });
 
-case 'debug':
-    if (message.member.permissions.has('MANAGE_CHANNELS')) {
-        const playerState = player.state.status;
-        const connectionState = connection?.state?.status;
-        message.reply(`Debug Info:\nPlayer State: ${playerState}\nConnection State: ${connectionState}`);
-    }
-    break;
-
 // Barry's personality prompt
 const BARRY_PROMPT = `You are Barry The Intern, the Discord bot for Dork Magazine. You embody the distinctive voice of Dork, combining sharp cultural observation with genuine enthusiasm and clever commentary.
 
@@ -173,6 +165,18 @@ client.on('messageCreate', async message => {
                 case 'status':
                     const status = connection?.state?.status || 'Not connected';
                     message.reply(`Radio status: ${status}`);
+                    break;
+
+                case 'debug':
+                    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+                        const playerState = player.state.status;
+                        const connectionState = connection?.state?.status;
+                        message.reply(`Debug Info:\nPlayer State: ${playerState}\nConnection State: ${connectionState}\nChannel ID: ${VOICE_CHANNEL_ID}`);
+                    }
+                    break;
+
+                default:
+                    message.reply('Available commands: status, restart (admin only), debug (admin only)');
                     break;
             }
             return;
