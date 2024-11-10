@@ -82,7 +82,7 @@ client.on('messageCreate', async message => {
                 { "role": "system", "content": BARRY_PROMPT },
                 { "role": "user", "content": messageContent }
             ],
-            max_tokens: 150,
+            max_tokens: 1000,
             temperature: 0.8
         });
 
