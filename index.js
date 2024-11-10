@@ -3,7 +3,7 @@ import { joinVoiceChannel, createAudioPlayer, createAudioResource, NoSubscriberB
 import OpenAI from 'openai';
 import play from 'play-dl';
 
-const VOICE_CHANNEL_ID = ''; // Add your voice channel ID here
+const VOICE_CHANNEL_ID = '1305261184970395709'; // Add your voice channel ID here
 
 const client = new Client({
     intents: [
