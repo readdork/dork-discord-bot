@@ -7,13 +7,14 @@ import {
     VoiceConnectionStatus,
     StreamType
 } from '@discordjs/voice';
+import miniget from 'miniget';
 import OpenAI from 'openai';
 import { promisify } from 'util';
 import { pipeline } from 'stream';
 const pipelineAsync = promisify(pipeline);
 
 const VOICE_CHANNEL_ID = '1305261184970395709';
-const RADIO_URL = 'http://s2.radio.co/s3e57f0675/listen.m3u';
+const RADIO_URL = 'https://s2.radio.co/s3e57f0675/listen';
 
 const client = new Client({
     intents: [
@@ -51,18 +52,15 @@ async function startStreaming(voiceChannel) {
         isRestarting = true;
         console.log('Starting stream connection...');
         
-        // Clear any existing timeout
         if (streamTimeout) {
             clearTimeout(streamTimeout);
             streamTimeout = null;
         }
 
-        // Destroy existing connection if any
         if (connection) {
             connection.destroy();
         }
 
-        // Create new connection
         connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
@@ -70,22 +68,28 @@ async function startStreaming(voiceChannel) {
             selfDeaf: false
         });
 
-        // Create resource
-        const resource = createAudioResource(RADIO_URL, {
-            inputType: 'arbitrary',
+        // Create a stream with automatic reconnection
+        const stream = miniget(RADIO_URL, {
+            maxRetries: 10,
+            maxReconnects: 10,
+            backoff: { inc: 500, max: 10000 }
+        });
+
+        const resource = createAudioResource(stream, {
+            inputType: StreamType.Arbitrary,
             inlineVolume: true,
-            silencePaddingFrames: 0
         });
 
         resource.volume?.setVolume(1);
 
-        // Subscribe and play
         connection.subscribe(player);
+        
+        // Add a small delay before playing
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
         player.play(resource);
-
         console.log('Stream started successfully');
 
-        // Connection state handling
         connection.on(VoiceConnectionStatus.Disconnected, async () => {
             console.log('Connection disconnected');
             if (!isRestarting) {
@@ -98,6 +102,17 @@ async function startStreaming(voiceChannel) {
 
         connection.on(VoiceConnectionStatus.Ready, () => {
             console.log('Connection ready');
+        });
+
+        // Add stream error handling
+        stream.on('error', (error) => {
+            console.error('Stream error:', error);
+            if (!isRestarting) {
+                streamTimeout = setTimeout(() => {
+                    isRestarting = false;
+                    startStreaming(voiceChannel);
+                }, 5000);
+            }
         });
 
     } catch (error) {
@@ -117,11 +132,13 @@ async function startStreaming(voiceChannel) {
 player.on('stateChange', (oldState, newState) => {
     console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
     
+    // Only restart if we've been idle for more than 5 seconds
     if (newState.status === 'idle' && !isRestarting) {
-        console.log('Player went idle, scheduling restart...');
+        console.log('Player went idle, waiting before restart...');
         const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
         if (channel) {
             streamTimeout = setTimeout(() => {
+                console.log('Attempting stream restart after idle...');
                 startStreaming(channel);
             }, 5000);
         }
