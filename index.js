@@ -1,5 +1,9 @@
 import { Client, GatewayIntentBits, ActivityType } from 'discord.js';
+import { joinVoiceChannel, createAudioPlayer, createAudioResource, NoSubscriberBehavior, VoiceConnectionStatus } from '@discordjs/voice';
 import OpenAI from 'openai';
+import play from 'play-dl';
+
+const VOICE_CHANNEL_ID = ''; // Add your voice channel ID here
 
 const client = new Client({
     intents: [
@@ -7,6 +11,7 @@ const client = new Client({
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildVoiceStates,
     ]
 });
 
@@ -14,6 +19,16 @@ const client = new Client({
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Set up audio player
+const player = createAudioPlayer({
+    behaviors: {
+        noSubscriber: NoSubscriberBehavior.Play
+    }
+});
+
+// Keep track of the current connection
+let connection = null;
 
 // Barry's personality prompt
 const BARRY_PROMPT = `You are Barry The Intern, the Discord bot for Dork Magazine. You embody the distinctive voice of Dork, combining sharp cultural observation with genuine enthusiasm and clever commentary.
@@ -46,8 +61,67 @@ Your tone is:
 
 Keep responses relatively brief but make them feel like a discovery, even when discussing familiar topics. You're writing for people who love music enough to chat about it - respect their intelligence while fueling their enthusiasm.`;
 
+// Function to start streaming
+async function startStreaming(voiceChannel) {
+    try {
+        // Connect to the voice channel
+        connection = joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: voiceChannel.guild.id,
+            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+        });
+
+        // Handle connection state changes
+        connection.on(VoiceConnectionStatus.Ready, () => {
+            console.log('Voice connection ready!');
+            playStream();
+        });
+
+        connection.on('error', error => {
+            console.error('Voice connection error:', error);
+            reconnect(voiceChannel);
+        });
+
+        // Subscribe the player to the connection
+        connection.subscribe(player);
+
+    } catch (error) {
+        console.error('Error starting stream:', error);
+        setTimeout(() => startStreaming(voiceChannel), 5000);
+    }
+}
+
+// Function to play the stream
+async function playStream() {
+    try {
+        const stream = await play.stream(process.env.RADIO_URL);
+        const resource = createAudioResource(stream.stream, {
+            inputType: stream.type
+        });
+        player.play(resource);
+    } catch (error) {
+        console.error('Error playing stream:', error);
+        setTimeout(playStream, 5000);
+    }
+}
+
+// Function to handle reconnection
+function reconnect(voiceChannel) {
+    console.log('Attempting to reconnect...');
+    if (connection) {
+        connection.destroy();
+    }
+    setTimeout(() => startStreaming(voiceChannel), 5000);
+}
+
+// Handle player errors
+player.on('error', error => {
+    console.error('Player error:', error);
+    playStream();
+});
+
 // Bot ready event
-client.once('ready', () => {
+client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     client.user.setPresence({
         activities: [{ 
@@ -56,11 +130,45 @@ client.once('ready', () => {
         }],
         status: 'online'
     });
+
+    // Connect to voice channel and start streaming
+    try {
+        const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
+        if (channel) {
+            await startStreaming(channel);
+            console.log('Started radio stream');
+        }
+    } catch (error) {
+        console.error('Error connecting to voice channel:', error);
+    }
 });
 
 // Message handling
 client.on('messageCreate', async message => {
     try {
+        // Handle radio commands
+        if (message.content.startsWith('!radio')) {
+            const command = message.content.split(' ')[1];
+            
+            switch (command) {
+                case 'restart':
+                    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+                        const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
+                        if (channel) {
+                            await startStreaming(channel);
+                            message.reply('Restarting radio stream...');
+                        }
+                    }
+                    break;
+                
+                case 'status':
+                    const status = connection?.state?.status || 'Not connected';
+                    message.reply(`Radio status: ${status}`);
+                    break;
+            }
+            return;
+        }
+
         // Ignore messages from bots
         if (message.author.bot) return;
 
