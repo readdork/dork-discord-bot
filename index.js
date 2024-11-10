@@ -9,9 +9,6 @@ import {
 } from '@discordjs/voice';
 import miniget from 'miniget';
 import OpenAI from 'openai';
-import { promisify } from 'util';
-import { pipeline } from 'stream';
-const pipelineAsync = promisify(pipeline);
 
 const VOICE_CHANNEL_ID = '1305261184970395709';
 const RADIO_URL = 'https://s2.radio.co/s3e57f0675/listen';
@@ -37,6 +34,41 @@ const player = createAudioPlayer({
         noSubscriber: NoSubscriberBehavior.Play
     }
 });
+
+const RADIO_CO_STATION_ID = 's3e57f0675'; // Your station ID from the stream URL
+let currentTrack = '';
+let trackCheckInterval = null;
+
+async function updateNowPlaying() {
+    try {
+        const response = await fetch(`https://public.radio.co/stations/${RADIO_CO_STATION_ID}/status`);
+        const data = await response.json();
+        
+        if (data.current_track && data.current_track.title) {
+            const newTrack = data.current_track.title;
+            if (newTrack !== currentTrack) {
+                currentTrack = newTrack;
+                console.log('Now playing:', currentTrack);
+                
+                // Get the voice channel and update its name
+                const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
+                if (channel) {
+                    try {
+                        await channel.setName(`🎵 ${currentTrack.substring(0, 90)}`);
+                    } catch (error) {
+                        if (error.code === 50035) {
+                            console.log('Rate limited on channel update, waiting...');
+                        } else {
+                            console.error('Error updating channel name:', error);
+                        }
+                    }
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error fetching now playing:', error);
+    }
+}
 
 let connection = null;
 let isRestarting = false;
@@ -68,7 +100,6 @@ async function startStreaming(voiceChannel) {
             selfDeaf: false
         });
 
-        // Create a stream with automatic reconnection
         const stream = miniget(RADIO_URL, {
             maxRetries: 10,
             maxReconnects: 10,
@@ -84,7 +115,6 @@ async function startStreaming(voiceChannel) {
 
         connection.subscribe(player);
         
-        // Add a small delay before playing
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         player.play(resource);
@@ -104,7 +134,6 @@ async function startStreaming(voiceChannel) {
             console.log('Connection ready');
         });
 
-        // Add stream error handling
         stream.on('error', (error) => {
             console.error('Stream error:', error);
             if (!isRestarting) {
@@ -126,13 +155,17 @@ async function startStreaming(voiceChannel) {
     } finally {
         isRestarting = false;
     }
+
+    if (!trackCheckInterval) {
+        updateNowPlaying();
+        trackCheckInterval = setInterval(updateNowPlaying, 10000);
+    }
 }
 
 // Player event handling
 player.on('stateChange', (oldState, newState) => {
     console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
     
-    // Only restart if we've been idle for more than 5 seconds
     if (newState.status === 'idle' && !isRestarting) {
         console.log('Player went idle, waiting before restart...');
         const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
@@ -156,6 +189,13 @@ player.on('error', error => {
         }
     }
 });
+
+function stopTrackChecking() {
+    if (trackCheckInterval) {
+        clearInterval(trackCheckInterval);
+        trackCheckInterval = null;
+    }
+}
 
 // Barry's personality prompt
 const BARRY_PROMPT = `You are Barry The Intern, the Discord bot for Dork Magazine. You embody the distinctive voice of Dork, combining sharp cultural observation with genuine enthusiasm and clever commentary.
@@ -188,7 +228,6 @@ Your tone is:
 
 Keep responses relatively brief but make them feel like a discovery, even when discussing familiar topics. You're writing for people who love music enough to chat about it - respect their intelligence while fueling their enthusiasm.`;
 
-// Bot ready event
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     client.user.setPresence({
@@ -199,7 +238,6 @@ client.once('ready', async () => {
         status: 'online'
     });
 
-    // Connect to voice channel and start streaming
     try {
         const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
         if (channel) {
@@ -214,7 +252,6 @@ client.once('ready', async () => {
 // Message handling
 client.on('messageCreate', async message => {
     try {
-        // Handle radio commands
         if (message.content.startsWith('!radio')) {
             const command = message.content.split(' ')[1];
             
@@ -243,6 +280,17 @@ client.on('messageCreate', async message => {
                     }
                     break;
 
+                case 'track':
+                    message.reply(`Currently playing: ${currentTrack || 'Unknown'}`);
+                    break;
+
+                case 'refresh':
+                    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+                        await updateNowPlaying();
+                        message.reply('Refreshed track information.');
+                    }
+                    break;
+
                 case 'fix':
                     if (message.member.permissions.has('MANAGE_CHANNELS')) {
                         isRestarting = false;
@@ -265,21 +313,14 @@ client.on('messageCreate', async message => {
             return;
         }
 
-        // Ignore messages from bots
         if (message.author.bot) return;
-
-        // Only respond when mentioned
         if (!message.mentions.has(client.user)) return;
 
         console.log('Message received:', message.content);
 
-        // Show typing indicator
         await message.channel.sendTyping();
-
-        // Remove the bot mention from the message
         const messageContent = message.content.replace(/<@!?\d+>/g, '').trim();
 
-        // Get AI response
         const completion = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
             messages: [
@@ -290,8 +331,12 @@ client.on('messageCreate', async message => {
             temperature: 0.8
         });
 
-        // Send response
-        await message.reply(completion.choices[0].message.content);
+        if (completion.choices && completion.choices[0]) {
+            await message.reply(completion.choices[0].message.content);
+        } else {
+            console.log('No choices returned from OpenAI');
+            await message.reply("Couldn't get a response, try again in a bit!");
+        }
 
     } catch (error) {
         console.error('Error:', error);
@@ -302,6 +347,19 @@ client.on('messageCreate', async message => {
 // Error handling
 client.on('error', error => {
     console.error('Discord client error:', error);
+});
+
+player.on('error', error => {
+    console.error('Player error:', error);
+    stopTrackChecking();
+    if (!isRestarting) {
+        const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
+        if (channel) {
+            streamTimeout = setTimeout(() => {
+                startStreaming(channel);
+            }, 5000);
+        }
+    }
 });
 
 // Login
