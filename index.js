@@ -1,9 +1,17 @@
 import { Client, GatewayIntentBits, ActivityType } from 'discord.js';
-import { joinVoiceChannel, createAudioPlayer, createAudioResource, NoSubscriberBehavior, VoiceConnectionStatus } from '@discordjs/voice';
+import { 
+    joinVoiceChannel, 
+    createAudioPlayer, 
+    createAudioResource, 
+    NoSubscriberBehavior, 
+    VoiceConnectionStatus,
+    entersState
+} from '@discordjs/voice';
 import OpenAI from 'openai';
 import play from 'play-dl';
 
-const VOICE_CHANNEL_ID = '1305261184970395709'; // Add your voice channel ID here
+const VOICE_CHANNEL_ID = ''; // Add your voice channel ID here
+const RADIO_URL = 'https://s2.radio.co/s3e57f0675/listen';
 
 const client = new Client({
     intents: [
@@ -20,10 +28,11 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Set up audio player
+// Set up audio player with better reliability
 const player = createAudioPlayer({
     behaviors: {
-        noSubscriber: NoSubscriberBehavior.Play
+        noSubscriber: NoSubscriberBehavior.Play,
+        maxMissedFrames: 5000
     }
 });
 
@@ -61,14 +70,16 @@ Your tone is:
 
 Keep responses relatively brief but make them feel like a discovery, even when discussing familiar topics. You're writing for people who love music enough to chat about it - respect their intelligence while fueling their enthusiasm.`;
 
-// Function to start streaming
+// Function to start streaming with improved reliability
 async function startStreaming(voiceChannel) {
     try {
-        // Connect to the voice channel
+        // Connect to the voice channel with 24/7 settings
         connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false,
         });
 
         // Handle connection state changes
@@ -77,9 +88,18 @@ async function startStreaming(voiceChannel) {
             playStream();
         });
 
-        connection.on('error', error => {
-            console.error('Voice connection error:', error);
-            reconnect(voiceChannel);
+        connection.on(VoiceConnectionStatus.Disconnected, async () => {
+            try {
+                // Try to rejoin immediately
+                await Promise.race([
+                    entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+                    entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+                ]);
+            } catch (error) {
+                // If we can't rejoin, destroy connection and create a new one
+                connection.destroy();
+                startStreaming(voiceChannel);
+            }
         });
 
         // Subscribe the player to the connection
@@ -91,33 +111,41 @@ async function startStreaming(voiceChannel) {
     }
 }
 
-// Function to play the stream
+// Function to play the stream with improved error handling
 async function playStream() {
     try {
-        const stream = await play.stream(process.env.RADIO_URL);
-        const resource = createAudioResource(stream.stream, {
-            inputType: stream.type
+        const resource = createAudioResource(RADIO_URL, {
+            inlineVolume: true,
         });
+        
+        resource.volume?.setVolume(1);
         player.play(resource);
+        
+        console.log('Started playing radio stream');
     } catch (error) {
         console.error('Error playing stream:', error);
         setTimeout(playStream, 5000);
     }
 }
 
-// Function to handle reconnection
-function reconnect(voiceChannel) {
-    console.log('Attempting to reconnect...');
-    if (connection) {
-        connection.destroy();
+// Monitor and maintain connection
+setInterval(() => {
+    const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
+    if (channel && (!connection || connection.state.status === VoiceConnectionStatus.Disconnected)) {
+        console.log('Detected disconnection, attempting to reconnect...');
+        startStreaming(channel);
     }
-    setTimeout(() => startStreaming(voiceChannel), 5000);
-}
+}, 30000);
 
 // Handle player errors
 player.on('error', error => {
     console.error('Player error:', error);
-    playStream();
+    const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
+    if (channel) {
+        setTimeout(() => {
+            playStream();
+        }, 5000);
+    }
 });
 
 // Bot ready event
