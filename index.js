@@ -8,11 +8,11 @@ import {
     StreamType
 } from '@discordjs/voice';
 import OpenAI from 'openai';
-import { createReadStream } from 'node:fs';
-import ffmpeg from 'ffmpeg-static';
-import { spawn } from 'node:child_process';
+import { promisify } from 'util';
+import { pipeline } from 'stream';
+const pipelineAsync = promisify(pipeline);
 
-const VOICE_CHANNEL_ID = '1305261184970395709'; // Your voice channel ID
+const VOICE_CHANNEL_ID = '1305261184970395709';
 const RADIO_URL = 'https://s2.radio.co/s3e57f0675/listen';
 
 const client = new Client({
@@ -30,48 +30,33 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Set up audio player with better settings
+// Set up audio player
 const player = createAudioPlayer({
     behaviors: {
-        noSubscriber: NoSubscriberBehavior.Play,
-        maxMissedFrames: 5000
+        noSubscriber: NoSubscriberBehavior.Play
     }
 });
 
 let connection = null;
-let currentProcess = null;
-
-function createFFmpegStream(url) {
-    if (currentProcess) {
-        currentProcess.kill();
-    }
-
-    const ffmpegArgs = [
-        '-reconnect', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
-        '-i', url,
-        '-acodec', 'libopus',
-        '-f', 'opus',
-        '-ar', '48000',
-        '-ac', '2',
-        '-b:a', '96k',
-        '-loglevel', 'warning',
-        'pipe:1'
-    ];
-
-    currentProcess = spawn(ffmpeg, ffmpegArgs);
-    currentProcess.stderr.on('data', (data) => {
-        console.log(`FFmpeg: ${data}`);
-    });
-
-    return currentProcess.stdout;
-}
+let isRestarting = false;
+let streamTimeout = null;
 
 async function startStreaming(voiceChannel) {
+    if (isRestarting) {
+        console.log('Already restarting, skipping...');
+        return;
+    }
+
     try {
+        isRestarting = true;
         console.log('Starting stream connection...');
         
+        // Clear any existing timeout
+        if (streamTimeout) {
+            clearTimeout(streamTimeout);
+            streamTimeout = null;
+        }
+
         // Destroy existing connection if any
         if (connection) {
             connection.destroy();
@@ -85,14 +70,13 @@ async function startStreaming(voiceChannel) {
             selfDeaf: false
         });
 
-        // Create stream and resource
-        const stream = createFFmpegStream(RADIO_URL);
-        const resource = createAudioResource(stream, {
-            inputType: StreamType.Opus,
-            inlineVolume: true
+        // Create resource
+        const resource = createAudioResource(RADIO_URL, {
+            inputType: 'arbitrary',
+            inlineVolume: true,
+            silencePaddingFrames: 0
         });
 
-        // Set initial volume
         resource.volume?.setVolume(1);
 
         // Subscribe and play
@@ -101,52 +85,58 @@ async function startStreaming(voiceChannel) {
 
         console.log('Stream started successfully');
 
-        // Handle connection state changes
+        // Connection state handling
         connection.on(VoiceConnectionStatus.Disconnected, async () => {
-            console.log('Connection disconnected, attempting to reconnect...');
-            try {
-                if (connection) {
-                    connection.destroy();
-                }
-                setTimeout(() => startStreaming(voiceChannel), 5000);
-            } catch (error) {
-                console.error('Failed to handle disconnection:', error);
+            console.log('Connection disconnected');
+            if (!isRestarting) {
+                streamTimeout = setTimeout(() => {
+                    isRestarting = false;
+                    startStreaming(voiceChannel);
+                }, 5000);
             }
         });
 
-        connection.on(VoiceConnectionStatus.Connecting, () => {
-            console.log('Connection status: Connecting');
-        });
-
         connection.on(VoiceConnectionStatus.Ready, () => {
-            console.log('Connection status: Ready');
+            console.log('Connection ready');
         });
 
     } catch (error) {
         console.error('Error in startStreaming:', error);
-        setTimeout(() => startStreaming(voiceChannel), 5000);
+        if (!isRestarting) {
+            streamTimeout = setTimeout(() => {
+                isRestarting = false;
+                startStreaming(voiceChannel);
+            }, 5000);
+        }
+    } finally {
+        isRestarting = false;
     }
 }
 
-// More detailed player monitoring
+// Player event handling
 player.on('stateChange', (oldState, newState) => {
     console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
     
-    if (newState.status === 'idle') {
-        console.log('Player went idle, attempting to restart stream...');
+    if (newState.status === 'idle' && !isRestarting) {
+        console.log('Player went idle, scheduling restart...');
         const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
         if (channel) {
-            startStreaming(channel);
+            streamTimeout = setTimeout(() => {
+                startStreaming(channel);
+            }, 5000);
         }
     }
 });
 
 player.on('error', error => {
     console.error('Player error:', error);
-    const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
-    if (channel) {
-        console.log('Attempting to restart stream due to error...');
-        startStreaming(channel);
+    if (!isRestarting) {
+        const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
+        if (channel) {
+            streamTimeout = setTimeout(() => {
+                startStreaming(channel);
+            }, 5000);
+        }
     }
 });
 
@@ -232,13 +222,27 @@ client.on('messageCreate', async message => {
                     if (message.member.permissions.has('MANAGE_CHANNELS')) {
                         const playerState = player.state.status;
                         const connectionState = connection?.state?.status;
-                        const processState = currentProcess ? 'Running' : 'Not running';
-                        message.reply(`Debug Info:\nPlayer State: ${playerState}\nConnection State: ${connectionState}\nFFmpeg Process: ${processState}\nChannel ID: ${VOICE_CHANNEL_ID}`);
+                        message.reply(`Debug Info:\nPlayer State: ${playerState}\nConnection State: ${connectionState}\nChannel ID: ${VOICE_CHANNEL_ID}\nRestart Flag: ${isRestarting}`);
+                    }
+                    break;
+
+                case 'fix':
+                    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+                        isRestarting = false;
+                        if (streamTimeout) {
+                            clearTimeout(streamTimeout);
+                            streamTimeout = null;
+                        }
+                        const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
+                        if (channel) {
+                            await startStreaming(channel);
+                            message.reply('Fixing stream...');
+                        }
                     }
                     break;
 
                 default:
-                    message.reply('Available commands: status, restart (admin only), debug (admin only)');
+                    message.reply('Available commands: status, restart (admin only), debug (admin only), fix (admin only)');
                     break;
             }
             return;
