@@ -28,16 +28,84 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Set up audio player with better reliability
+// Set up audio player
 const player = createAudioPlayer({
     behaviors: {
-        noSubscriber: NoSubscriberBehavior.Play,
-        maxMissedFrames: 5000
+        noSubscriber: NoSubscriberBehavior.Play
     }
 });
 
 // Keep track of the current connection
 let connection = null;
+
+// Function to start streaming
+async function startStreaming(voiceChannel) {
+    try {
+        console.log('Starting stream connection...');
+        // Connect to the voice channel
+        connection = joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: voiceChannel.guild.id,
+            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false,
+        });
+
+        console.log('Connected to voice channel');
+
+        // Create audio resource directly from URL
+        const resource = createAudioResource(RADIO_URL, {
+            inputType: 'arbitrary',
+            inlineVolume: true
+        });
+
+        // Set volume
+        if (resource.volume) {
+            resource.volume.setVolume(1);
+        }
+
+        // Play the resource
+        player.play(resource);
+        connection.subscribe(player);
+
+        console.log('Started playing stream');
+
+        // Handle connection state changes
+        connection.on(VoiceConnectionStatus.Disconnected, async () => {
+            try {
+                console.log('Disconnected, attempting to reconnect...');
+                await Promise.race([
+                    entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+                    entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+                ]);
+            } catch (error) {
+                console.log('Failed to reconnect, creating new connection...');
+                connection.destroy();
+                startStreaming(voiceChannel);
+            }
+        });
+
+        // Handle player errors
+        player.on('error', error => {
+            console.error('Player error:', error);
+            console.log('Attempting to restart stream...');
+            startStreaming(voiceChannel);
+        });
+
+    } catch (error) {
+        console.error('Error in startStreaming:', error);
+        setTimeout(() => startStreaming(voiceChannel), 5000);
+    }
+}
+
+// Regular connection check
+setInterval(() => {
+    const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
+    if (channel && (!connection || connection.state.status === VoiceConnectionStatus.Disconnected)) {
+        console.log('Regular check: Connection lost, reconnecting...');
+        startStreaming(channel);
+    }
+}, 30000);
 
 // Barry's personality prompt
 const BARRY_PROMPT = `You are Barry The Intern, the Discord bot for Dork Magazine. You embody the distinctive voice of Dork, combining sharp cultural observation with genuine enthusiasm and clever commentary.
