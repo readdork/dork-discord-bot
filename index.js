@@ -1,12 +1,12 @@
-const { Client, GatewayIntentBits, ActivityType } = require("discord.js");
-const OpenAI = require('openai');
+import { Client, GatewayIntentBits, ActivityType } from 'discord.js';
+import OpenAI from 'openai';
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent, // This is crucial for reading message content
+        GatewayIntentBits.MessageContent,
     ]
 });
 
@@ -15,7 +15,7 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Enhanced Barry prompt incorporating Dork House Style
+// Barry's personality prompt
 const BARRY_PROMPT = `You are Barry The Intern, the Discord bot for Dork Magazine. You embody the distinctive voice of Dork, combining sharp cultural observation with genuine enthusiasm and clever commentary.
 
 Key characteristics of your personality:
@@ -46,34 +46,34 @@ Your tone is:
 
 Keep responses relatively brief but make them feel like a discovery, even when discussing familiar topics. You're writing for people who love music enough to chat about it - respect their intelligence while fueling their enthusiasm.`;
 
-client.on("ready", () => {
-    console.log(`Logged in as ${client.user.tag}!`);
+// Bot ready event
+client.once('ready', () => {
+    console.log(`Logged in as ${client.user.tag}`);
     client.user.setPresence({
         activities: [{ 
             name: "DORK+",
             type: ActivityType.Watching
         }],
-        status: "online"
+        status: 'online'
     });
 });
 
-// Handle messages
-client.on("messageCreate", async (message) => {
-    // Ignore messages from bots (including self)
-    if (message.author.bot) return;
-
-    // Only respond when mentioned
-    if (!message.mentions.has(client.user)) return;
-
+// Message handling
+client.on('messageCreate', async message => {
     try {
+        // Ignore messages from bots
+        if (message.author.bot) return;
+
+        // Only respond when mentioned
+        if (!message.mentions.has(client.user)) return;
+
+        console.log('Message received:', message.content);
+
         // Show typing indicator
         await message.channel.sendTyping();
 
-        // Remove the bot mention and any extra whitespace from the message
+        // Remove the bot mention from the message
         const messageContent = message.content.replace(/<@!?\d+>/g, '').trim();
-
-        // Log incoming message for debugging
-        console.log(`Received message: "${messageContent}" from ${message.author.tag}`);
 
         // Get AI response
         const completion = await openai.chat.completions.create({
@@ -82,22 +82,16 @@ client.on("messageCreate", async (message) => {
                 { "role": "system", "content": BARRY_PROMPT },
                 { "role": "user", "content": messageContent }
             ],
-            max_tokens: 150, // Keep responses concise
-            temperature: 0.8 // Add some personality variation
+            max_tokens: 150,
+            temperature: 0.8
         });
 
-        // Get the response content
-        const response = completion.choices[0].message.content;
-        console.log(`Sending response: "${response}"`);
-
-        // Send the response
-        await message.reply(response);
+        // Send response
+        await message.reply(completion.choices[0].message.content);
 
     } catch (error) {
         console.error('Error:', error);
-        
-        // Send a more on-brand error message
-        message.reply("*Spills coffee on keyboard* ...Sorry, bit of an intern moment there. Mind trying again?");
+        await message.reply("*Spills coffee on keyboard* ...Sorry, bit of an intern moment there. Mind trying again?");
     }
 });
 
@@ -106,4 +100,5 @@ client.on('error', error => {
     console.error('Discord client error:', error);
 });
 
+// Login
 client.login(process.env.DISCORD_TOKEN);
