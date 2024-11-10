@@ -34,59 +34,45 @@ const player = createAudioPlayer({
     }
 });
 
-// Keep track of the current connection
 let connection = null;
 
-// Function to start streaming
 async function startStreaming(voiceChannel) {
     try {
         console.log('Starting stream connection...');
         
-        if (connection) {
-            connection.destroy();
-        }
-        
-        // Connect to the voice channel
+        // Create voice connection
         connection = joinVoiceChannel({
             channelId: voiceChannel.id,
             guildId: voiceChannel.guild.id,
             adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            selfDeaf: false,
-            selfMute: false,
         });
 
-        console.log('Connected to voice channel');
-
-        // Create audio resource directly from URL
+        // Create resource for the radio stream
         const resource = createAudioResource(RADIO_URL, {
             inputType: 'arbitrary',
-            inlineVolume: true
+            inlineVolume: true,
+            metadata: {
+                title: 'Dork Radio'
+            }
         });
 
-        // Set volume
-        if (resource.volume) {
-            resource.volume.setVolume(1);
-        }
-
-        // Play the resource
-        player.play(resource);
+        // Subscribe player to connection and play
         connection.subscribe(player);
-
-        console.log('Started playing stream');
+        player.play(resource);
 
         // Handle connection state changes
-        connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        connection.on(VoiceConnectionStatus.Disconnected, () => {
             try {
-                console.log('Disconnected, attempting to reconnect...');
-                await Promise.race([
-                    entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-                    entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
-                ]);
-            } catch (error) {
-                console.log('Failed to reconnect, creating new connection...');
                 connection.destroy();
-                setTimeout(() => startStreaming(voiceChannel), 5000);
+                startStreaming(voiceChannel);
+            } catch (error) {
+                console.error('Failed to handle disconnection:', error);
             }
+        });
+
+        // Log when the stream starts playing
+        player.on('stateChange', (oldState, newState) => {
+            console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
         });
 
     } catch (error) {
@@ -95,24 +81,22 @@ async function startStreaming(voiceChannel) {
     }
 }
 
-// Handle player errors
+// Debugging listeners
 player.on('error', error => {
     console.error('Player error:', error);
-    const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
-    if (channel) {
-        console.log('Attempting to restart stream due to player error...');
-        setTimeout(() => startStreaming(channel), 5000);
-    }
 });
 
-// Regular connection check
-setInterval(() => {
-    const channel = client.channels.cache.get(VOICE_CHANNEL_ID);
-    if (channel && (!connection || connection.state.status === VoiceConnectionStatus.Disconnected)) {
-        console.log('Regular check: Connection lost, reconnecting...');
-        startStreaming(channel);
+player.on('stateChange', (oldState, newState) => {
+    console.log(`Player state changed from ${oldState.status} to ${newState.status}`);
+});
+
+case 'debug':
+    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+        const playerState = player.state.status;
+        const connectionState = connection?.state?.status;
+        message.reply(`Debug Info:\nPlayer State: ${playerState}\nConnection State: ${connectionState}`);
     }
-}, 30000);
+    break;
 
 // Barry's personality prompt
 const BARRY_PROMPT = `You are Barry The Intern, the Discord bot for Dork Magazine. You embody the distinctive voice of Dork, combining sharp cultural observation with genuine enthusiasm and clever commentary.
