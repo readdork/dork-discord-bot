@@ -158,7 +158,7 @@ async function startStreaming(voiceChannel) {
 
     if (!trackCheckInterval) {
         updateNowPlaying();
-        trackCheckInterval = setInterval(updateNowPlaying, 10000);
+        trackCheckInterval = setInterval(updateNowPlaying, 5000);
     }
 }
 
