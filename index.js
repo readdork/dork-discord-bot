@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, ActivityType } from 'discord.js';
+import { Client, GatewayIntentBits, ActivityType, PermissionsBitField } from 'discord.js';
 import { 
     joinVoiceChannel, 
     createAudioPlayer, 
@@ -49,20 +49,15 @@ async function updateNowPlaying() {
             if (newTrack !== currentTrack) {
                 currentTrack = newTrack;
                 console.log('Now playing:', currentTrack);
-                
-                // Get the voice channel and update its name
-                const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
-                if (channel) {
-                    try {
-                        await channel.setName(`🎵 ${currentTrack.substring(0, 90)}`);
-                    } catch (error) {
-                        if (error.code === 50035) {
-                            console.log('Rate limited on channel update, waiting...');
-                        } else {
-                            console.error('Error updating channel name:', error);
-                        }
-                    }
-                }
+
+                // Update bot's presence with the now-playing track
+                client.user.setPresence({
+                    activities: [{ 
+                        name: currentTrack.substring(0, 128),
+                        type: ActivityType.Listening
+                    }],
+                    status: 'online'
+                });
             }
         }
     } catch (error) {
@@ -158,6 +153,7 @@ async function startStreaming(voiceChannel) {
 
     if (!trackCheckInterval) {
         updateNowPlaying();
+        // Check for new track every 5 seconds
         trackCheckInterval = setInterval(updateNowPlaying, 5000);
     }
 }
@@ -230,6 +226,8 @@ Keep responses relatively brief but make them feel like a discovery, even when d
 
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
+
+    // Set initial presence
     client.user.setPresence({
         activities: [{ 
             name: "DORK+",
@@ -240,9 +238,11 @@ client.once('ready', async () => {
 
     try {
         const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
-        if (channel) {
+        if (channel && channel.isVoiceBased()) {
             await startStreaming(channel);
             console.log('Started radio stream');
+        } else {
+            console.error('Voice channel not found or invalid.');
         }
     } catch (error) {
         console.error('Error connecting to voice channel:', error);
@@ -253,13 +253,14 @@ client.once('ready', async () => {
 client.on('messageCreate', async message => {
     try {
         if (message.content.startsWith('!radio')) {
-            const command = message.content.split(' ')[1];
+            const args = message.content.split(' ');
+            const command = args[1];
             
             switch (command) {
                 case 'restart':
-                    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+                    if (message.member.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
                         const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
-                        if (channel) {
+                        if (channel && channel.isVoiceBased()) {
                             await startStreaming(channel);
                             message.reply('Restarting radio stream...');
                         }
@@ -273,7 +274,7 @@ client.on('messageCreate', async message => {
                     break;
 
                 case 'debug':
-                    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+                    if (message.member.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
                         const playerState = player.state.status;
                         const connectionState = connection?.state?.status;
                         message.reply(`Debug Info:\nPlayer State: ${playerState}\nConnection State: ${connectionState}\nChannel ID: ${VOICE_CHANNEL_ID}\nRestart Flag: ${isRestarting}`);
@@ -285,21 +286,21 @@ client.on('messageCreate', async message => {
                     break;
 
                 case 'refresh':
-                    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+                    if (message.member.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
                         await updateNowPlaying();
                         message.reply('Refreshed track information.');
                     }
                     break;
 
                 case 'fix':
-                    if (message.member.permissions.has('MANAGE_CHANNELS')) {
+                    if (message.member.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
                         isRestarting = false;
                         if (streamTimeout) {
                             clearTimeout(streamTimeout);
                             streamTimeout = null;
                         }
                         const channel = await client.channels.fetch(VOICE_CHANNEL_ID);
-                        if (channel) {
+                        if (channel && channel.isVoiceBased()) {
                             await startStreaming(channel);
                             message.reply('Fixing stream...');
                         }
